@@ -8,7 +8,7 @@
 
 - Any live cell with more than three live neighbours dies, as if by overpopulation.
 
--Any dead cell with exactly three live neighbours becomes a live cell, as if by reproduction.
+- Any dead cell with exactly three live neighbours becomes a live cell, as if by reproduction.
 
 ## Implementation
 
@@ -28,7 +28,7 @@ It also displays the generation, calculation time and render time.
 
 ## Planned improvements
 
-- Disable the event handlers while in "play" mode, should boost rendering dramatically
+- Disable the event handlers while in "play" mode, should boost rendering dramatically. (it did, down to ~20ms for an empty 50x100 grid, down from 30-40 with the JS event handler, and 50 with the lambda
 
 - Fix grid toggle needing multiple clicks to change
 
@@ -38,3 +38,4 @@ It also displays the generation, calculation time and render time.
 
 - Save/Load state
   
+- Could do with loads of restructuring and UI work, but quick and simple was the aim with this project. Was done mostly within 24 hours.

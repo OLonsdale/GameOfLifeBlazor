@@ -102,7 +102,16 @@
                 int row = rowIndex;
                 int col = colIndex;
                 string classStr = cell? "alive" : "";
-                <td data-row="@row" data-col="@col" class="@classStr" @onclick="OnClick" />
+
+                if(gameState == "paused")
+                {
+                    <td data-row="@row" data-col="@col" class="@classStr" @onclick="OnClick" />
+
+                }
+                else
+                {
+                    <td data-row="@row" data-col="@col" class="@classStr" />
+                }
             }
         </tr>
 
