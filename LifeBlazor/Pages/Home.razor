@@ -12,9 +12,8 @@
 
     td {
         border: solid @gridColor 1px;
-        width: 10px;
-        height: 10px;
-        cursor: move;
+        width: @(cellSize)px;
+        height: @(cellSize)px;
     }
 
     button {
@@ -33,20 +32,15 @@
         margin-right: 1ch;
     }
 
-    .alive{
+    .alive {
         background-color: @cellColor
     }
 </style>
 
 <script>
-    window.getClickedCellInfo = function () {
-        // Assuming 'event' is the global event object
-        var element = event.target;
-        var row = element.getAttribute('data-row');
-        var col = element.getAttribute('data-col');
-        return row + ',' + col;
-    }
-
+    window.CellClicked = (x, y) => {
+        DotNet.invokeMethodAsync('LifeBlazor', 'CellClicked', x, y)
+    };
 </script>
 
 
@@ -70,10 +64,14 @@
 
         <span class="top-bar-text">@generationDuration ms</span>
 
+        <span class="top-bar-text">Height:</span>
         <input type="number" min="1" max="500" @bind-value="gridHeight" />
-        <span class="top-bar-text">Height: @gridHeight</span>
+        <span class="top-bar-text">Width:</span>
         <input type="number" min="1" max="500" @bind-value="gridWidth" />
-        <span class="top-bar-text">Width: @gridWidth</span>
+
+        <span class="top-bar-text">Cell Size:</span>
+        <input type="number" min="1" max="50" @bind-value="cellSize" />
+
 
         <InputCheckbox @bind-Value="showGrid" />
         <span class="top-bar-text">Show Grid</span>
@@ -101,16 +99,16 @@
                 var cell = grid[rowIndex, colIndex];
                 int row = rowIndex;
                 int col = colIndex;
-                string classStr = cell? "alive" : "";
+                string classStr = cell ? "alive" : "";
 
-                if(gameState == "paused")
+                if (gameState == "paused")
                 {
-                    <td data-row="@row" data-col="@col" class="@classStr" @onclick="OnClick" />
+                    <td draggable class="@classStr" onclick="CellClicked(@row,@col)" ondragenter="CellClicked(@row,@col)" />
 
                 }
                 else
                 {
-                    <td data-row="@row" data-col="@col" class="@classStr" />
+                    <td class="@classStr" />
                 }
             }
         </tr>
@@ -126,6 +124,8 @@
     bool showSettings = true;
 
     int liveCells = 1;
+
+    public static event Action<(int, int)> OnCellClicked;
 
     int _gridHeight = 50;
     int _gridWidth = 100;
@@ -161,11 +161,13 @@
     long generation = 0;
     TimeSpan frameTime = new();
     TimeSpan renderTime = new();
+    int cellSize = 10;
 
     async Task OnClick(MouseEventArgs e)
     {
         // Call JS interop to get the clicked cell info
-        var cellInfo = await JSRuntime.InvokeAsync<string>("getClickedCellInfo");
+        var jsInProcess = (IJSInProcessRuntime)JSRuntime;
+        var cellInfo = jsInProcess.Invoke<string>("getClickedCellInfo");
 
         // Parse the cell info to get row and column
         var parts = cellInfo.Split(',');
@@ -193,14 +195,21 @@
     string cellColor = "aliceblue";
     string gridColor = "darkgrey";
 
-    void CellClicked((int, int) xy)
+    private void CellClicked((int, int) xy)
     {
         grid[xy.Item1, xy.Item2] = !grid[xy.Item1, xy.Item2];
         StateHasChanged();
     }
 
+    [JSInvokable]
+    public static void CellClicked(int x, int y)
+    {
+        OnCellClicked?.Invoke((x, y));
+    }
+
     protected override void OnInitialized()
     {
+        OnCellClicked += CellClicked;
         Console.WriteLine("Initialized");
         ResetGrid();
         timer = new Timer(new TimerCallback(Step), null, 0, generationDuration);
@@ -257,6 +266,8 @@
         wrapGrid = value;
     }
 
+    List<(int, int)> toToggle = new();
+
     void Step(object? timerState)
     {
         if (gameState == "paused") return;
@@ -265,27 +276,26 @@
         generation++;
         var startTime = DateTime.Now;
 
-        //calculate
-        List<(int, int)> toToggle = new();
-        for (int rowIndex = 0; rowIndex <= grid.GetUpperBound(0); rowIndex++)
+        toToggle.Clear();
+        int rows = grid.GetLength(0);
+        int cols = grid.GetLength(1);
+        bool[,] newGrid = new bool[rows, cols];
+
+
+        for (int rowIndex = 0; rowIndex < rows; rowIndex++)
         {
-            for (int colIndex = 0; colIndex <= grid.GetUpperBound(1); colIndex++)
+            for (int colIndex = 0; colIndex < cols; colIndex++)
             {
-                int activeNeighbours = GetActiveNeighbourCount(rowIndex, colIndex);
+                int activeNeighbours = wrapGrid ? GetActiveNeighbourCount(rowIndex, colIndex)
+                                            : GetActiveNeighbourCountNoWrap(rowIndex, colIndex);
 
-                if (grid[rowIndex, colIndex] && (activeNeighbours < 2 || activeNeighbours > 3))
-                {
-                    toToggle.Add((rowIndex, colIndex)); //dies
-                }
-
-                if (!grid[rowIndex, colIndex] && activeNeighbours == 3)
-                {
-                    toToggle.Add((rowIndex, colIndex)); //reproduces
-                }
+                bool isAlive = grid[rowIndex, colIndex];
+                newGrid[rowIndex, colIndex] = isAlive && (activeNeighbours == 2 || activeNeighbours == 3) ||
+                                             !isAlive && activeNeighbours == 3;
             }
         }
 
-        toToggle.ForEach(x => grid[x.Item1, x.Item2] = !grid[x.Item1, x.Item2]);
+        grid = newGrid;
 
         // liveCells = grid.OfType<bool>().Count(x => x);
 
@@ -307,95 +317,52 @@
 
     }
 
+    int GetActiveNeighbourCountNoWrap(int rowIndex, int colIndex)
+    {
+        int activeNeighbours = 0;
+        int rows = grid.GetLength(0);
+        int cols = grid.GetLength(1);
+
+        // Manually check each of the eight neighbors
+        if (rowIndex - 1 >= 0 && colIndex - 1 >= 0) activeNeighbours += grid[rowIndex - 1, colIndex - 1] ? 1 : 0;
+        if (rowIndex - 1 >= 0) activeNeighbours += grid[rowIndex - 1, colIndex] ? 1 : 0;
+        if (rowIndex - 1 >= 0 && colIndex + 1 < cols) activeNeighbours += grid[rowIndex - 1, colIndex + 1] ? 1 : 0;
+
+        if (colIndex - 1 >= 0) activeNeighbours += grid[rowIndex, colIndex - 1] ? 1 : 0;
+        if (colIndex + 1 < cols) activeNeighbours += grid[rowIndex, colIndex + 1] ? 1 : 0;
+
+        if (rowIndex + 1 < rows && colIndex - 1 >= 0) activeNeighbours += grid[rowIndex + 1, colIndex - 1] ? 1 : 0;
+        if (rowIndex + 1 < rows) activeNeighbours += grid[rowIndex + 1, colIndex] ? 1 : 0;
+        if (rowIndex + 1 < rows && colIndex + 1 < cols) activeNeighbours += grid[rowIndex + 1, colIndex + 1] ? 1 : 0;
+
+        return activeNeighbours;
+    }
+
+
     int GetActiveNeighbourCount(int rowIndex, int colIndex)
     {
-        for (int i = 0; i != 7; i++)
-        {
-            neighbours[i] = false;
-        }
+        int activeNeighbours = 0;
+        int rows = grid.GetLength(0);
+        int cols = grid.GetLength(1);
 
-        //Up
-        if (rowIndex - 1 >= 0)
-            neighbours[0] = grid[rowIndex - 1, colIndex];
-        else if (wrapGrid)
-            neighbours[0] = grid[grid.GetUpperBound(0), colIndex];
+        // Manually check each of the eight neighbors with wrap-around
+        activeNeighbours += grid[(rowIndex - 1 + rows) % rows, (colIndex - 1 + cols) % cols] ? 1 : 0;
+        activeNeighbours += grid[(rowIndex - 1 + rows) % rows, colIndex] ? 1 : 0;
+        activeNeighbours += grid[(rowIndex - 1 + rows) % rows, (colIndex + 1) % cols] ? 1 : 0;
 
-        // Down
-        if (rowIndex + 1 <= grid.GetUpperBound(0))
-            neighbours[1] = grid[rowIndex + 1, colIndex];
-        else if (wrapGrid)
-            neighbours[1] = grid[0, colIndex];
+        activeNeighbours += grid[rowIndex, (colIndex - 1 + cols) % cols] ? 1 : 0;
+        activeNeighbours += grid[rowIndex, (colIndex + 1) % cols] ? 1 : 0;
 
-        // Left
-        if (colIndex - 1 >= 0)
-            neighbours[2] = grid[rowIndex, colIndex - 1];
-        else if (wrapGrid)
-            neighbours[2] = grid[rowIndex, grid.GetUpperBound(1)];
+        activeNeighbours += grid[(rowIndex + 1) % rows, (colIndex - 1 + cols) % cols] ? 1 : 0;
+        activeNeighbours += grid[(rowIndex + 1) % rows, colIndex] ? 1 : 0;
+        activeNeighbours += grid[(rowIndex + 1) % rows, (colIndex + 1) % cols] ? 1 : 0;
 
-        // Right
-        if (colIndex + 1 <= grid.GetUpperBound(1))
-            neighbours[3] = grid[rowIndex, colIndex + 1];
-        else if (wrapGrid)
-            neighbours[3] = grid[rowIndex, 0];
-
-        // Top Left
-        if (rowIndex - 1 >= 0 && colIndex - 1 >= 0)
-            neighbours[4] = grid[rowIndex - 1, colIndex - 1];
-        else if (wrapGrid)
-        {
-            if (rowIndex - 1 >= 0)
-                neighbours[4] = grid[rowIndex - 1, grid.GetUpperBound(1)];
-            else if (colIndex - 1 >= 0)
-                neighbours[4] = grid[grid.GetUpperBound(0), colIndex - 1];
-            else
-                neighbours[4] = grid[grid.GetUpperBound(0), grid.GetUpperBound(1)];
-        }
-
-        // Bottom Left
-        if (rowIndex + 1 <= grid.GetUpperBound(0) && colIndex - 1 >= 0)
-            neighbours[5] = grid[rowIndex + 1, colIndex - 1];
-        else if (wrapGrid)
-        {
-            if (rowIndex + 1 <= grid.GetUpperBound(0))
-                neighbours[5] = grid[rowIndex + 1, grid.GetUpperBound(1)];
-            else if (colIndex - 1 >= 0)
-                neighbours[5] = grid[0, colIndex - 1];
-            else
-                neighbours[5] = grid[0, grid.GetUpperBound(1)];
-        }
-
-        // Bottom Right
-        if (rowIndex + 1 <= grid.GetUpperBound(0) && colIndex + 1 <= grid.GetUpperBound(1))
-            neighbours[6] = grid[rowIndex + 1, colIndex + 1];
-        else if (wrapGrid)
-        {
-            if (rowIndex + 1 <= grid.GetUpperBound(0))
-                neighbours[6] = grid[rowIndex + 1, 0];
-            else if (colIndex + 1 <= grid.GetUpperBound(1))
-                neighbours[6] = grid[0, colIndex + 1];
-            else
-                neighbours[6] = grid[0, 0];
-        }
-
-        // Top Right
-        if (rowIndex - 1 >= 0 && colIndex + 1 <= grid.GetUpperBound(1))
-            neighbours[7] = grid[rowIndex - 1, colIndex + 1];
-        else if (wrapGrid)
-        {
-            if (rowIndex - 1 >= 0)
-                neighbours[7] = grid[rowIndex - 1, 0];
-            else if (colIndex + 1 <= grid.GetUpperBound(1))
-                neighbours[7] = grid[grid.GetUpperBound(0), colIndex + 1];
-            else
-                neighbours[7] = grid[grid.GetUpperBound(0), 0];
-        }
-
-        return neighbours.Count(x => x);
-
+        return activeNeighbours;
     }
 
     public void Dispose()
     {
         timer?.Dispose();
+        OnCellClicked -= CellClicked;
     }
 }
