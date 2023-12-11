@@ -1,0 +1,392 @@
+﻿@page "/"
+@inject IJSRuntime JSRuntime
+
+<PageTitle>Game of Life</PageTitle>
+<link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+
+<style>
+    html {
+        background-color: @backgroundColor;
+        font-family: sans-serif;
+    }
+
+    td {
+        border: solid @gridColor 1px;
+        width: 10px;
+        height: 10px;
+        cursor: move;
+    }
+
+    button {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 30px;
+        height: 30px;
+        color: @cellColor;
+        background-color: @backgroundColor;
+    }
+
+    .top-bar-text {
+        color: @cellColor;
+        margin-left: 1ch;
+        margin-right: 1ch;
+    }
+
+    .alive{
+        background-color: @cellColor
+    }
+</style>
+
+<script>
+    window.getClickedCellInfo = function () {
+        // Assuming 'event' is the global event object
+        var element = event.target;
+        var row = element.getAttribute('data-row');
+        var col = element.getAttribute('data-col');
+        return row + ',' + col;
+    }
+
+</script>
+
+
+<span style="display:flex; flex-direction:row; ">
+    <button disabled="@(gameState == "running")" @onclick="@(() => SetGameState("running"))"><i class="material-icons">play_arrow</i></button>
+    <button disabled="@(gameState == "paused")" @onclick="@(() => SetGameState("paused"))"><i class="material-icons">pause</i></button>
+    <button disabled="@(gameState == "step")" @onclick="@(() => SetGameState("step"))"><i class="material-icons">skip_next</i></button>
+    <button @onclick="@(() => ResetGrid())"><i class="material-icons">stop</i></button>
+    <button @onclick="@(() => RandomiseGrid())"><i class="material-icons">repeat</i></button>
+    <text class="top-bar-text" style="width:10ch; margin-left: 1ch; margin-right: 1ch;">@gameState</text>
+
+    <button style="margin-left: 2ch; margin-right: 2ch;" @onclick="@(() => showSettings = !showSettings)"><i class="material-icons">settings</i></button>
+
+
+    @if (showSettings)
+    {
+        <button disabled="@(generationDuration == 1000)" @onclick="@(() => SetCycleTime(1000))">1s</button>
+        <button disabled="@(generationDuration == 500)" @onclick="@(() => SetCycleTime(500))">0.5s</button>
+        <button disabled="@(generationDuration == 200)" @onclick="@(() => SetCycleTime(200))">0.2s</button>
+        <button disabled="@(generationDuration == 100)" @onclick="@(() => SetCycleTime(100))">0.1s</button>
+
+        <span class="top-bar-text">@generationDuration ms</span>
+
+        <input type="number" min="1" max="500" @bind-value="gridHeight" />
+        <span class="top-bar-text">Height: @gridHeight</span>
+        <input type="number" min="1" max="500" @bind-value="gridWidth" />
+        <span class="top-bar-text">Width: @gridWidth</span>
+
+        <InputCheckbox @bind-Value="showGrid" />
+        <span class="top-bar-text">Show Grid</span>
+
+
+        <InputCheckbox @bind-Value="wrapGrid" />
+        <span class="top-bar-text">Wrap: @wrapGrid</span>
+
+        <span class="top-bar-text">Generation: @generation</span>
+        <span class="top-bar-text">Living: @liveCells</span>
+        <span class="top-bar-text">Calculation Time: @frameTime.Milliseconds ms</span>
+        <span class="top-bar-text">Render Time: @renderTime.Milliseconds ms</span>
+    }
+
+
+</span>
+
+<table>
+
+    @for (int rowIndex = 0; rowIndex < grid.GetLength(0); rowIndex++)
+    {
+        <tr>
+            @for (int colIndex = 0; colIndex < grid.GetLength(1); colIndex++)
+            {
+                var cell = grid[rowIndex, colIndex];
+                int row = rowIndex;
+                int col = colIndex;
+                string classStr = cell? "alive" : "";
+                <td data-row="@row" data-col="@col" class="@classStr" @onclick="OnClick" />
+            }
+        </tr>
+
+    }
+</table>
+
+@code {
+
+    bool[,] grid = new bool[0, 0];
+    bool[] neighbours = new bool[8];
+
+    bool showSettings = true;
+
+    int liveCells = 1;
+
+    int _gridHeight = 50;
+    int _gridWidth = 100;
+    int gridHeight
+    {
+        set
+        {
+            _gridHeight = value;
+            ResetGrid();
+        }
+        get
+        {
+            return _gridHeight;
+        }
+    }
+    int gridWidth
+    {
+        set
+        {
+            _gridWidth = value;
+            ResetGrid();
+        }
+        get
+        {
+            return _gridWidth;
+        }
+    }
+
+    string gameState = "paused";
+    private Timer? timer;
+    int generationDuration = 100;
+    bool wrapGrid = true;
+    long generation = 0;
+    TimeSpan frameTime = new();
+    TimeSpan renderTime = new();
+
+    async Task OnClick(MouseEventArgs e)
+    {
+        // Call JS interop to get the clicked cell info
+        var cellInfo = await JSRuntime.InvokeAsync<string>("getClickedCellInfo");
+
+        // Parse the cell info to get row and column
+        var parts = cellInfo.Split(',');
+        if (parts.Length == 2 && int.TryParse(parts[0], out int row) && int.TryParse(parts[1], out int col))
+        {
+            CellClicked((row, col));
+        }
+    }
+
+    bool _showGrid = true;
+    bool showGrid
+    {
+        set
+        {
+            _showGrid = value;
+            gridColor = value ? backgroundColor : "darkgrey";
+        }
+        get
+        {
+            return _showGrid;
+        }
+    }
+
+    string backgroundColor = "black";
+    string cellColor = "aliceblue";
+    string gridColor = "darkgrey";
+
+    void CellClicked((int, int) xy)
+    {
+        grid[xy.Item1, xy.Item2] = !grid[xy.Item1, xy.Item2];
+        StateHasChanged();
+    }
+
+    protected override void OnInitialized()
+    {
+        Console.WriteLine("Initialized");
+        ResetGrid();
+        timer = new Timer(new TimerCallback(Step), null, 0, generationDuration);
+
+    }
+
+    void ResetGrid()
+    {
+        SetGameState("paused");
+        generation = 0;
+        grid = new bool[gridHeight, gridWidth];
+        for (int i = 0; i < gridHeight; i++)
+        {
+            for (int j = 0; j < gridWidth; j++)
+            {
+                grid[i, j] = false;
+            }
+        }
+    }
+
+    void RandomiseGrid()
+    {
+        Console.WriteLine("Random");
+        SetGameState("paused");
+        generation = 0;
+        var rand = new Random();
+
+        for (int i = 0; i < gridHeight; i++)
+        {
+            for (int j = 0; j < gridWidth; j++)
+            {
+                grid[i, j] = Convert.ToBoolean(rand.Next(0, 2));
+            }
+        }
+        StateHasChanged();
+    }
+
+    void SetGameState(string state)
+    {
+        Console.WriteLine($"changed to: {state}");
+        gameState = state;
+    }
+
+    void SetCycleTime(int time)
+    {
+        Console.WriteLine($"changed time to {time}ms");
+        timer?.Change(0, time);
+        generationDuration = time;
+    }
+
+    void SetWrap(bool value)
+    {
+        Console.WriteLine($"changed wrap to {value}");
+        wrapGrid = value;
+    }
+
+    void Step(object? timerState)
+    {
+        if (gameState == "paused") return;
+
+        Console.WriteLine(gameState);
+        generation++;
+        var startTime = DateTime.Now;
+
+        //calculate
+        List<(int, int)> toToggle = new();
+        for (int rowIndex = 0; rowIndex <= grid.GetUpperBound(0); rowIndex++)
+        {
+            for (int colIndex = 0; colIndex <= grid.GetUpperBound(1); colIndex++)
+            {
+                int activeNeighbours = GetActiveNeighbourCount(rowIndex, colIndex);
+
+                if (grid[rowIndex, colIndex] && (activeNeighbours < 2 || activeNeighbours > 3))
+                {
+                    toToggle.Add((rowIndex, colIndex)); //dies
+                }
+
+                if (!grid[rowIndex, colIndex] && activeNeighbours == 3)
+                {
+                    toToggle.Add((rowIndex, colIndex)); //reproduces
+                }
+            }
+        }
+
+        toToggle.ForEach(x => grid[x.Item1, x.Item2] = !grid[x.Item1, x.Item2]);
+
+        // liveCells = grid.OfType<bool>().Count(x => x);
+
+        if (gameState == "step" || liveCells == 0)
+        {
+            SetGameState("paused");
+        }
+
+        var endTime = DateTime.Now;
+        frameTime = endTime - startTime;
+
+
+        var startRender = DateTime.Now;
+        StateHasChanged();
+        var endRender = DateTime.Now;
+
+        renderTime = endRender - startRender;
+
+
+    }
+
+    int GetActiveNeighbourCount(int rowIndex, int colIndex)
+    {
+        for (int i = 0; i != 7; i++)
+        {
+            neighbours[i] = false;
+        }
+
+        //Up
+        if (rowIndex - 1 >= 0)
+            neighbours[0] = grid[rowIndex - 1, colIndex];
+        else if (wrapGrid)
+            neighbours[0] = grid[grid.GetUpperBound(0), colIndex];
+
+        // Down
+        if (rowIndex + 1 <= grid.GetUpperBound(0))
+            neighbours[1] = grid[rowIndex + 1, colIndex];
+        else if (wrapGrid)
+            neighbours[1] = grid[0, colIndex];
+
+        // Left
+        if (colIndex - 1 >= 0)
+            neighbours[2] = grid[rowIndex, colIndex - 1];
+        else if (wrapGrid)
+            neighbours[2] = grid[rowIndex, grid.GetUpperBound(1)];
+
+        // Right
+        if (colIndex + 1 <= grid.GetUpperBound(1))
+            neighbours[3] = grid[rowIndex, colIndex + 1];
+        else if (wrapGrid)
+            neighbours[3] = grid[rowIndex, 0];
+
+        // Top Left
+        if (rowIndex - 1 >= 0 && colIndex - 1 >= 0)
+            neighbours[4] = grid[rowIndex - 1, colIndex - 1];
+        else if (wrapGrid)
+        {
+            if (rowIndex - 1 >= 0)
+                neighbours[4] = grid[rowIndex - 1, grid.GetUpperBound(1)];
+            else if (colIndex - 1 >= 0)
+                neighbours[4] = grid[grid.GetUpperBound(0), colIndex - 1];
+            else
+                neighbours[4] = grid[grid.GetUpperBound(0), grid.GetUpperBound(1)];
+        }
+
+        // Bottom Left
+        if (rowIndex + 1 <= grid.GetUpperBound(0) && colIndex - 1 >= 0)
+            neighbours[5] = grid[rowIndex + 1, colIndex - 1];
+        else if (wrapGrid)
+        {
+            if (rowIndex + 1 <= grid.GetUpperBound(0))
+                neighbours[5] = grid[rowIndex + 1, grid.GetUpperBound(1)];
+            else if (colIndex - 1 >= 0)
+                neighbours[5] = grid[0, colIndex - 1];
+            else
+                neighbours[5] = grid[0, grid.GetUpperBound(1)];
+        }
+
+        // Bottom Right
+        if (rowIndex + 1 <= grid.GetUpperBound(0) && colIndex + 1 <= grid.GetUpperBound(1))
+            neighbours[6] = grid[rowIndex + 1, colIndex + 1];
+        else if (wrapGrid)
+        {
+            if (rowIndex + 1 <= grid.GetUpperBound(0))
+                neighbours[6] = grid[rowIndex + 1, 0];
+            else if (colIndex + 1 <= grid.GetUpperBound(1))
+                neighbours[6] = grid[0, colIndex + 1];
+            else
+                neighbours[6] = grid[0, 0];
+        }
+
+        // Top Right
+        if (rowIndex - 1 >= 0 && colIndex + 1 <= grid.GetUpperBound(1))
+            neighbours[7] = grid[rowIndex - 1, colIndex + 1];
+        else if (wrapGrid)
+        {
+            if (rowIndex - 1 >= 0)
+                neighbours[7] = grid[rowIndex - 1, 0];
+            else if (colIndex + 1 <= grid.GetUpperBound(1))
+                neighbours[7] = grid[grid.GetUpperBound(0), colIndex + 1];
+            else
+                neighbours[7] = grid[grid.GetUpperBound(0), 0];
+        }
+
+        return neighbours.Count(x => x);
+
+    }
+
+    public void Dispose()
+    {
+        timer?.Dispose();
+    }
+}
